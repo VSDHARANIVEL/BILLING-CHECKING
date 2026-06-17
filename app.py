@@ -838,6 +838,10 @@ def download_attendance():
 # ════════════════════════════════════════════════════════════
 #  BOOT
 # ════════════════════════════════════════════════════════════
+import os 
+import flask
+
+PORT = int(os.environ.get('PORT', 10000)) 
 if __name__ == '__main__':
     init_db()
     print("=" * 60)
