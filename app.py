@@ -76,9 +76,9 @@ def _build_dsn(url):
     # Replace pooler host with direct host if needed
     # pooler: aws-X-region.pooler.supabase.com:6543
     # direct: db.PROJECTREF.supabase.co:5432
-    def _build_dsn(url):
+def _build_dsn(url):
     if not url:
-        return url
+      return url
     if 'sslmode' not in url:
         sep = '&' if '?' in url else '?'
         url = url + sep + 'sslmode=require'
