@@ -51,7 +51,7 @@ DATABASE_URL    = os.environ.get('DATABASE_URL', '')
 SECRET_KEY      = os.environ.get('SECRET_KEY', 'billpro-dev-key-change-me')
 MGR_USER        = os.environ.get('MGR_USERNAME', 'manager')
 MGR_PASS        = os.environ.get('MGR_PASSWORD', 'manager123')
-PORT            = int(os.environ.get('PORT', 5000))
+PORT = int(os.environ.get('PORT', 10000))
 _raw            = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:5000,http://127.0.0.1:5000')
 ALLOWED_ORIGINS = [o.strip() for o in _raw.split(',') if o.strip()]
 
@@ -76,17 +76,13 @@ def _build_dsn(url):
     # Replace pooler host with direct host if needed
     # pooler: aws-X-region.pooler.supabase.com:6543
     # direct: db.PROJECTREF.supabase.co:5432
-    if 'pooler.supabase.com' in url:
-        # Extract project ref from pooler URL
-        # Format: postgresql://postgres.PROJECTREF:PASS@aws-X.pooler.supabase.com:6543/postgres
-        import re
-        m = re.search(r'postgres\.([a-z]+):', url)
-        if m:
-            ref = m.group(1)
-            # Extract password
-            pm = re.search(r':([^:@]+)@', url)
-            pw  = pm.group(1) if pm else ''
-            url = f'postgresql://postgres:{pw}@db.{ref}.supabase.co:5432/postgres'
+    def _build_dsn(url):
+    if not url:
+        return url
+    if 'sslmode' not in url:
+        sep = '&' if '?' in url else '?'
+        url = url + sep + 'sslmode=require'
+    return url
     # Ensure sslmode
     if 'sslmode' not in url:
         sep = '&' if '?' in url else '?'
