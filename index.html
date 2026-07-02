@@ -119,7 +119,8 @@ python app.py</pre>
           <div class="form-group"><label>Price (₹)</label>
             <input id="bPr" type="text" readonly></div>
           <div class="form-group" style="max-width:80px;"><label>Qty</label>
-            <input id="bQty" type="number" min="1" value="1" onkeydown="qtyEnterAdd(event)"></div>
+            <input id="bQty" type="number" min="1" value="1" onkeydown="qtyEnterDiscount(event)"></div>
+
           <div class="form-group" style="justify-content:flex-end;">
             <button class="btn btn-primary" onclick="addItem()">➕ Add Item</button>
           </div>
@@ -149,6 +150,44 @@ python app.py</pre>
             <input id="bWorkerName" type="hidden">
           </div>
         </div>
+        <!-- Optional Discount Toggle -->
+        <div class="form-row" style="margin-top:4px;align-items:center;">
+          <div class="form-group" style="flex:0 0 auto;">
+            <button class="btn btn-outline btn-sm" id="discToggleBtn"
+                    onclick="toggleDiscount()"
+                    style="color:var(--primary);border-color:var(--primary);margin-top:18px;">
+              🏷 Add Discount
+            </button>
+          </div>
+        </div>
+
+        <!-- Discount Panel — shown when toggled -->
+        <div id="discountBox" style="display:none;background:var(--card-bg,#f9f9f9);border:1.5px solid var(--primary);border-radius:10px;padding:14px 18px;margin-bottom:10px;">
+          <div style="font-weight:600;margin-bottom:10px;color:var(--primary);">🏷 Apply Discount</div>
+
+          <!-- Normal user: fixed 15% only -->
+          <div id="discNormalRow" style="display:none;">
+            <div style="background:#e8f5e9;border-radius:8px;padding:10px 16px;color:#2e7d32;font-weight:600;">
+              ✅ 15% Discount (Fixed for Normal Users)
+            </div>
+            <input type="hidden" id="bDiscPct" value="15">
+            <input type="hidden" id="bDiscType" value="pct">
+          </div>
+
+          <!-- Supervisor / Manager: choose % buttons + optional ₹ -->
+          <div id="discRoleRow" style="display:none;">
+            <div style="margin-bottom:8px;font-size:13px;color:var(--text2);">Select Discount %:</div>
+            <div id="discPctBtns" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>
+            <div style="margin-bottom:6px;font-size:12px;color:var(--text3);">— or enter custom ₹ amount —</div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <input id="bDiscAmt" type="number" min="0" step="0.01"
+                     placeholder="Custom ₹ amount (optional)"
+                     oninput="onDiscAmtInput()"
+                     style="max-width:200px;">
+              <span id="discCalcPreview" style="font-size:13px;color:var(--green);font-weight:600;"></span>
+            </div>
+          </div>
+        </div>
         <div class="bill-actions">
           <button class="btn btn-outline" onclick="clearBill()">🗑 Clear Bill</button>
           <button class="btn btn-success" onclick="submitBill()">✅ Generate Bill</button>
@@ -159,7 +198,7 @@ python app.py</pre>
     <!-- PAGE: STOCK -->
     <section id="page-stock" class="page">
       <h2 class="sec-title">Stock Manager</h2>
-      <div class="card">
+      <div class="card" id="stockAddCard" style="display:none;">
         <div class="card-title">Add New Product
           <span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:8px;">Enter: Code→Name→Price→Qty→adds</span>
         </div>
@@ -184,6 +223,11 @@ python app.py</pre>
           <span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:8px;">
             Click 🔲 Barcode to view, scan &amp; print the barcode for any product
           </span>
+        </div>
+        <div class="form-row" style="margin-bottom:12px;">
+          <div class="form-group">
+            <input id="stockSearch" type="text" placeholder="🔍 Search by name or code..." oninput="filterStock()" style="max-width:320px;">
+          </div>
         </div>
         <div class="table-wrap">
           <table>
@@ -296,8 +340,8 @@ python app.py</pre>
     <section id="page-reports" class="page">
       <h2 class="sec-title">Reports &amp; Analytics</h2>
       <div class="report-tabs">
-        <div class="rtab active" id="rtab-sales"   onclick="showReportTab('sales')">📑 Sales Reports</div>
-        <div class="rtab"        id="rtab-daily"   onclick="showReportTab('daily')">📊 Daily Sales Report</div>
+        <div class="rtab active" id="rtab-sales"   onclick="showReportTab('sales')">📑 Sales Reports <span style="font-size:10px;color:var(--amber);">🔒</span></div>
+        <div class="rtab"        id="rtab-daily"   onclick="showReportTab('daily')">📊 Daily Sales Report <span style="font-size:10px;color:var(--amber);">🔒 Manager</span></div>
         <div class="rtab"        id="rtab-monthly" onclick="showReportTab('monthly')">📈 Monthly Report</div>
       </div>
 
@@ -342,7 +386,7 @@ python app.py</pre>
       <div class="report-subpage" id="rpage-daily">
         <div class="card">
           <div class="card-title">📊 Daily Sales Report
-            <span style="font-size:11px;color:var(--green);font-weight:600;margin-left:8px;">✅ Open to all — no login required</span>
+            <span style="font-size:11px;color:var(--amber);font-weight:600;margin-left:8px;">🔒 Manager Login Required — Shows Today's Sales</span>
           </div>
           <div class="form-row">
             <div class="form-group"><label>Date</label>
@@ -605,6 +649,9 @@ python app.py</pre>
       <p><strong>Worker:</strong> <span id="rWorker">—</span></p>
     </div>
     <div class="r-items" id="rItemsContainer"></div>
+    <div class="r-total" id="rDiscountRow" style="display:none;background:#f0fff4;color:var(--green);">
+      <span>Discount</span><span id="rDiscount" style="color:var(--green);">−₹0.00</span>
+    </div>
     <div class="r-total"><span>TOTAL</span><span id="rTotal">₹0.00</span></div>
     <div class="r-footer">Thank you for your purchase!</div>
     <div class="r-actions">
@@ -646,6 +693,28 @@ python app.py</pre>
   </div>
   <div class="lbp-foot">
     <button class="btn btn-outline btn-sm" onclick="loadLastBillPanel()">🔄 Refresh</button>
+  </div>
+</div>
+
+<!-- SALES REPORT PASSWORD MODAL -->
+<div id="salesPassModal" class="overlay hidden" onclick="if(event.target.id==='salesPassModal')closeSalesPasswordModal()">
+  <div class="receipt-modal" style="max-width:380px;" onclick="event.stopPropagation()">
+    <div class="r-head" style="background:var(--primary);">
+      <h2 style="color:#fff;">🔒 Sales Report</h2>
+      <p style="color:rgba(255,255,255,0.85);">Enter password to access</p>
+    </div>
+    <div style="padding:24px;">
+      <div class="form-group" style="margin-bottom:16px;">
+        <label>Password</label>
+        <input id="salesPassInput" type="password" placeholder="Enter report password"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();checkSalesPassword();}">
+      </div>
+      <div id="salesPassMsg" class="msg-box"></div>
+      <div class="bill-actions" style="margin-top:16px;">
+        <button class="btn btn-outline" onclick="closeSalesPasswordModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="checkSalesPassword()">🔓 Unlock</button>
+      </div>
+    </div>
   </div>
 </div>
 
