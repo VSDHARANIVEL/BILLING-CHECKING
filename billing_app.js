@@ -1,5 +1,10 @@
 /* =========================================================
-   BillPro — Frontend JavaScript
+   BillPro — Frontend JavaScript  (Updated Edition)
+   Changes:
+   1. Billing: Discount field after Qty → applies per-item discount
+   2. Stock Manager: Search filter + Add restricted to Godown Sup/Manager
+   3. Reports: Sales Report password-protected
+   4. Daily Sales Report: Manager-only + always shows today
    ========================================================= */
 'use strict';
 
@@ -26,6 +31,10 @@ var PAGE_TITLES = {
 /* ─ AUTH STATE ─ */
 var AUTH = { logged_in:false, is_supervisor:false, is_manager:false, username:'' };
 
+/* ─ SALES REPORT PASSWORD ─ */
+var SALES_REPORT_UNLOCKED = false;
+var SALES_REPORT_PASSWORD = 'sales123'; // Change this password as needed
+
 /* ─ NAV ─ */
 function navTo(page) {
   document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
@@ -37,14 +46,14 @@ function navTo(page) {
   var tt = document.getElementById('topTitle');
   if (tt) tt.textContent = PAGE_TITLES[page] || '';
 
-  if (page === 'stock')       loadStock();
+  if (page === 'stock')       { loadStock(); updateStockAddVisibility(); }
   if (page === 'incentives')  { checkSupStatus(); loadIncentives(); }
-  if (page === 'reports')     { showReportTab('sales'); loadReports(); }
+  if (page === 'reports')     { showReportTab('sales'); }
   if (page === 'bill')        loadNextBillId();
   if (page === 'account')     refreshAccountPage();
 }
 
-/* ─ API — handles non-JSON (HTML) responses gracefully ─ */
+/* ─ API ─ */
 function api(method, path, body) {
   var opts = { method:method, headers:{'Content-Type':'application/json'}, credentials:'include' };
   if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
@@ -103,11 +112,12 @@ function refreshAuth() {
         tr.textContent = 'Not signed in';
       }
     }
+    updateStockAddVisibility();
   }).catch(function(){});
 }
 
 /* =========================================================
-   BILL
+   BILL — with DISCOUNT support
 ========================================================= */
 var billItems = []; var productCache = {};
 
@@ -144,36 +154,207 @@ function lookupProduct() {
   }
 }
 
-function qtyEnterAdd(e) {
+/* Qty Enter → Add Item directly (Discount is optional toggle) */
+function qtyEnterDiscount(e) {
   if (e.key !== 'Enter') return;
   e.preventDefault();
   addItem();
+}
+
+/* Discount Enter → add item */
+function discountEnterAdd(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  addItem();
+}
+
+/* ── Discount System ── */
+
+/* Supervisor %options */
+var DISC_SUPERVISOR = [15, 25, 30];
+/* Manager %options */
+var DISC_MANAGER    = [15, 25, 30, 50, 75];
+
+var _selectedDiscPct = 0; // currently selected % button
+var _discType = 'none';   // 'pct' | 'amt' | 'none'
+
+function toggleDiscount() {
+  var box = document.getElementById('discountBox');
+  var btn = document.getElementById('discToggleBtn');
+  if (!box) return;
+
+  if (box.style.display === 'none') {
+    box.style.display = '';
+    btn.textContent = '✕ Remove Discount';
+    btn.style.color = 'var(--red)';
+    btn.style.borderColor = 'var(--red)';
+    renderDiscountPanel();
+  } else {
+    box.style.display = 'none';
+    btn.textContent = '🏷 Add Discount';
+    btn.style.color = 'var(--primary)';
+    btn.style.borderColor = 'var(--primary)';
+    resetDiscount();
+    toast('Discount removed','info');
+  }
+}
+
+function renderDiscountPanel() {
+  var normalRow = document.getElementById('discNormalRow');
+  var roleRow   = document.getElementById('discRoleRow');
+  var pctBtns   = document.getElementById('discPctBtns');
+  _selectedDiscPct = 0; _discType = 'none';
+  setVal('bDiscAmt','');
+  if (document.getElementById('discCalcPreview'))
+    document.getElementById('discCalcPreview').textContent = '';
+
+  if (AUTH.is_manager) {
+    /* Manager: 15,25,30,50,75 + ₹ */
+    if (normalRow) normalRow.style.display = 'none';
+    if (roleRow)   roleRow.style.display   = '';
+    buildPctButtons(DISC_MANAGER, pctBtns);
+    toast('Manager discount: 15% | 25% | 30% | 50% | 75% | ₹ custom','info');
+  } else if (AUTH.is_supervisor) {
+    /* Supervisor: 15,25,30 + ₹ */
+    if (normalRow) normalRow.style.display = 'none';
+    if (roleRow)   roleRow.style.display   = '';
+    buildPctButtons(DISC_SUPERVISOR, pctBtns);
+    toast('Supervisor discount: 15% | 25% | 30% | ₹ custom','info');
+  } else {
+    /* Normal / not logged in: fixed 15% only */
+    if (normalRow) normalRow.style.display = '';
+    if (roleRow)   roleRow.style.display   = 'none';
+    _selectedDiscPct = 15; _discType = 'pct';
+    toast('15% discount will be applied','info');
+  }
+}
+
+function buildPctButtons(pcts, container) {
+  if (!container) return;
+  container.innerHTML = pcts.map(function(p) {
+    return '<button id="discBtn'+p+'" class="btn btn-outline btn-sm" '
+      + 'onclick="selectPct('+p+')" '
+      + 'style="min-width:52px;font-weight:600;">'
+      + p+'%</button>';
+  }).join('');
+}
+
+function selectPct(pct) {
+  /* Deselect all */
+  [15,25,30,50,75].forEach(function(p){
+    var b = document.getElementById('discBtn'+p);
+    if (b) { b.style.background=''; b.style.color=''; b.style.borderColor=''; }
+  });
+  _selectedDiscPct = pct; _discType = 'pct';
+  /* Highlight selected */
+  var sel = document.getElementById('discBtn'+pct);
+  if (sel) {
+    sel.style.background = 'var(--primary)';
+    sel.style.color      = '#fff';
+    sel.style.borderColor= 'var(--primary)';
+  }
+  /* Clear amt input */
+  setVal('bDiscAmt','');
+  updateDiscPreview();
+}
+
+function onDiscAmtInput() {
+  /* When user types in ₹ field → deselect % buttons */
+  _discType = 'amt'; _selectedDiscPct = 0;
+  [15,25,30,50,75].forEach(function(p){
+    var b = document.getElementById('discBtn'+p);
+    if (b) { b.style.background=''; b.style.color=''; b.style.borderColor=''; }
+  });
+  updateDiscPreview();
+}
+
+function updateDiscPreview() {
+  var preview = document.getElementById('discCalcPreview');
+  if (!preview) return;
+  var subtotal = billItems.reduce(function(s,i){ return s+i.subtotal; }, 0);
+  if (subtotal <= 0) { preview.textContent = ''; return; }
+  var disc = calcDiscount(subtotal);
+  if (disc > 0) {
+    var final = subtotal - disc;
+    preview.textContent = '→ −₹'+disc.toFixed(2)+' | Final: ₹'+final.toFixed(2);
+  } else {
+    preview.textContent = '';
+  }
+}
+
+function calcDiscount(subtotal) {
+  var discBox = document.getElementById('discountBox');
+  if (!discBox || discBox.style.display === 'none') return 0;
+
+  if (!AUTH.is_manager && !AUTH.is_supervisor) {
+    /* Normal user: fixed 15% */
+    return Math.round(subtotal * 0.15 * 100) / 100;
+  }
+
+  if (_discType === 'pct' && _selectedDiscPct > 0) {
+    return Math.round(subtotal * (_selectedDiscPct/100) * 100) / 100;
+  }
+  if (_discType === 'amt') {
+    var amt = parseFloat(getVal('bDiscAmt')) || 0;
+    return Math.min(amt, subtotal);
+  }
+  return 0;
+}
+
+function resetDiscount() {
+  _selectedDiscPct = 0; _discType = 'none';
+  setVal('bDiscAmt','');
+  var preview = document.getElementById('discCalcPreview');
+  if (preview) preview.textContent = '';
 }
 
 function addItem() {
   var code  = getVal('bCode'), name = getVal('bPN');
   var price = parseFloat(getVal('bPr'));
   var qty   = parseInt(document.getElementById('bQty').value) || 1;
+  var discount = 0; // Discount is bill-level, not per-item
+
   if (!code||!name||isNaN(price)){
     toast('Enter a valid 3-digit product code first','err');
     document.getElementById('bCode').focus(); return;
   }
   if (qty < 1){ toast('Quantity must be at least 1','err'); return; }
+
+  // Discount validation
+  if (discount > price) {
+    toast('Discount cannot exceed item price (₹'+price.toFixed(2)+')','err');
+    document.getElementById('bDisc').focus(); return;
+  }
+
   var p = productCache[code];
   if (p) {
     var already = billItems.filter(function(i){return i.code===code;})
                            .reduce(function(s,i){return s+i.quantity;},0);
     if (p.stock < qty+already){ toast('Not enough stock! Available: '+(p.stock-already),'err'); return; }
   }
+
+  var discountedPrice = price - discount;
+  var subtotal = discountedPrice * qty;
+
   var idx = billItems.findIndex(function(i){return i.code===code;});
-  if (idx >= 0){ billItems[idx].quantity+=qty; billItems[idx].subtotal=billItems[idx].price*billItems[idx].quantity; }
-  else { billItems.push({code:code,name:name,price:price,quantity:qty,subtotal:price*qty}); }
+  if (idx >= 0 && discount === 0){
+    billItems[idx].quantity += qty;
+    billItems[idx].subtotal  = billItems[idx].discountedPrice * billItems[idx].quantity;
+  } else {
+    billItems.push({
+      code: code, name: name,
+      price: price, discount: discount,
+      discountedPrice: discountedPrice,
+      quantity: qty, subtotal: subtotal
+    });
+  }
   renderBillItems();
-  clearVals(['bCode','bPN','bPr']); setVal('bQty',1); setLookup('','');
+  clearVals(['bCode','bPN','bPr','bDisc']); setVal('bQty',1); setLookup('','');
   var badge = document.getElementById('lookupBadge');
   if (badge) badge.style.display = 'none';
   document.getElementById('bCode').focus();
-  toast(name+' × '+qty+' added','ok');
+  var discMsg = discount > 0 ? ' (Disc: ₹'+discount.toFixed(2)+')' : '';
+  toast(name+' × '+qty+discMsg+' added','ok');
 }
 
 function removeItem(idx){ billItems.splice(idx,1); renderBillItems(); }
@@ -189,19 +370,28 @@ function renderBillItems() {
   var total=0, html='';
   billItems.forEach(function(it,i){
     total+=it.subtotal;
+    var discCell = it.discount > 0
+      ? '<span style="color:var(--green);font-weight:600;">−₹'+it.discount.toFixed(2)+'</span>'
+      : '—';
     html+='<tr>'
       +'<td>'+(i+1)+'</td>'
       +'<td><strong>'+escHtml(it.name)+'</strong><br><span class="code-pill">'+escHtml(it.code)+'</span></td>'
       +'<td>'+it.quantity+'</td>'
       +'<td>'+money(it.price)+'</td>'
-      +'<td>—</td>'
+      +'<td>'+discCell+'</td>'
       +'<td><strong>'+money(it.subtotal)+'</strong></td>'
       +'<td><button class="del-btn" onclick="removeItem('+i+')">Remove</button></td>'
       +'</tr>';
   });
   tb.innerHTML=html;
   document.getElementById('bSubtotal').textContent=money(total);
-  document.getElementById('bTotal').textContent=money(total);
+  // Apply discount to total display
+  var discAmt = calcDiscount(total);
+  var finalTotal = total - discAmt;
+  document.getElementById('bTotal').textContent = discAmt > 0
+    ? money(finalTotal) + ' (after discount)'
+    : money(total);
+  updateDiscPreview();
 }
 
 function submitBill() {
@@ -210,15 +400,23 @@ function submitBill() {
   if (!cname){ toast('Customer name is required','err'); document.getElementById('bCN').focus(); return; }
   if (!cphone||cphone.length!==10||!/^\d+$/.test(cphone)){ toast('Phone must be 10 digits','err'); document.getElementById('bCP').focus(); return; }
   if (!billItems.length){ toast('Add at least one item','err'); return; }
-  var items = billItems.map(function(i){return {code:i.code,quantity:i.quantity};});
+  // Calculate bill-level discount using role-based system
+  var subtotal = billItems.reduce(function(s,i){ return s+i.subtotal; }, 0);
+  var billDiscount = calcDiscount(subtotal);
+
+  var items = billItems.map(function(i){return {code:i.code,quantity:i.quantity,discount:0};});
   api('POST','/api/bills',{
     customer_name:cname,customer_phone:cphone,customer_email:cemail,customer_addr:caddr,
-    worker_number:wnum,worker_name:wname,items:items
+    worker_number:wnum,worker_name:wname,items:items,bill_discount:billDiscount
   }).then(function(r){
-    showReceipt(r.bill_id,cname,cphone,wnum,wname,billItems,r.total);
+    showReceipt(r.bill_id,cname,cphone,wnum,wname,billItems,r.total,billDiscount);
     billItems=[]; renderBillItems();
     clearVals(['bCN','bCP','bEmail','bAddr','bWorker','bWorkerName']);
-    var badge=document.getElementById('workerBadge'); if(badge) badge.style.display='none';
+    var discBox2=document.getElementById('discountBox');
+    var discBtn=document.getElementById('discToggleBtn');
+    if(discBox2) discBox2.style.display='none';
+    if(discBtn){ discBtn.textContent='🏷 Add Discount'; discBtn.style.color='var(--primary)'; discBtn.style.borderColor='var(--primary)'; }
+    resetDiscount();
     loadNextBillId(); toast('Bill #'+r.bill_id+' created! Total: '+money(r.total),'ok');
   }).catch(function(e){ toast(e.message,'err'); });
 }
@@ -229,6 +427,12 @@ function clearBill() {
   billItems=[]; renderBillItems();
   clearVals(['bCN','bCP','bEmail','bAddr','bWorker','bWorkerName']);
   var badge=document.getElementById('workerBadge'); if(badge) badge.style.display='none';
+  // Reset discount
+  var discBox3=document.getElementById('discountBox');
+  var discBtn3=document.getElementById('discToggleBtn');
+  if(discBox3) discBox3.style.display='none';
+  if(discBtn3){ discBtn3.textContent='🏷 Add Discount'; discBtn3.style.color='var(--primary)'; discBtn3.style.borderColor='var(--primary)'; }
+  resetDiscount();
   toast('Bill cleared','info');
 }
 
@@ -243,7 +447,8 @@ function previewWorker() {
   }).catch(function(){ if(badge) badge.style.display='none'; if(nameEl) nameEl.value=''; });
 }
 
-function showReceipt(id,cust,phone,wnum,wname,items,total) {
+function showReceipt(id,cust,phone,wnum,wname,items,total,billDiscount) {
+  billDiscount = billDiscount || 0;
   function s(elId,v){var el=document.getElementById(elId);if(el)el.textContent=v;}
   s('rDate',new Date().toLocaleString('en-IN'));
   s('rNo',String(id).padStart(3,'0'));
@@ -251,8 +456,20 @@ function showReceipt(id,cust,phone,wnum,wname,items,total) {
   s('rWorker',wnum?wnum+' — '+wname:'N/A');
   var c=document.getElementById('rItemsContainer');
   if(c) c.innerHTML=items.map(function(it){
-    return '<div class="r-item-row"><span>'+escHtml(it.name)+' × '+it.quantity+'</span><span>'+money(it.subtotal)+'</span></div>';
+    var discNote = it.discount > 0 ? ' <span style="color:green;font-size:11px;">(−₹'+it.discount.toFixed(2)+')</span>' : '';
+    return '<div class="r-item-row"><span>'+escHtml(it.name)+' × '+it.quantity+discNote+'</span><span>'+money(it.subtotal)+'</span></div>';
   }).join('');
+  // Show bill discount in receipt if applicable
+  var rDiscRow = document.getElementById('rDiscountRow');
+  var rDisc = document.getElementById('rDiscount');
+  if (rDiscRow && rDisc) {
+    if (billDiscount > 0) {
+      rDiscRow.style.display = '';
+      rDisc.textContent = '−'+money(billDiscount);
+    } else {
+      rDiscRow.style.display = 'none';
+    }
+  }
   s('rTotal',money(total));
   var ov=document.getElementById('receiptOverlay'); if(ov) ov.classList.remove('hidden');
 }
@@ -260,9 +477,35 @@ function closeReceipt(){ var ov=document.getElementById('receiptOverlay'); if(ov
 function handleOverlayClick(e){ if(e.target.id==='receiptOverlay') closeReceipt(); }
 
 /* =========================================================
-   STOCK
+   STOCK — with Search + Role-based Add
 ========================================================= */
+
+/* Show/hide Add Product form based on role */
+function updateStockAddVisibility() {
+  var addCard = document.getElementById('stockAddCard');
+  if (!addCard) return;
+  // Show only for Godown Supervisor (is_supervisor) or Manager
+  if (AUTH.is_manager || AUTH.is_supervisor) {
+    addCard.style.display = '';
+  } else {
+    addCard.style.display = 'none';
+  }
+}
+
+/* Live search filter */
+function filterStock() {
+  var q = getVal('stockSearch').toLowerCase();
+  var rows = document.querySelectorAll('#stockTbody tr');
+  rows.forEach(function(row) {
+    var text = row.textContent.toLowerCase();
+    row.style.display = (q === '' || text.includes(q)) ? '' : 'none';
+  });
+}
+
 function addProduct() {
+  if (!AUTH.is_manager && !AUTH.is_supervisor) {
+    toast('Only Godown Supervisor or Manager can add products','err'); return;
+  }
   var code=getVal('pCode'), name=getVal('pName'), price=getVal('pPrice'), stock=getVal('pStock');
   if (!code||code.length!==3||!/^\d{3}$/.test(code)){ setMsg('pMsg','✘ Code must be exactly 3 digits','err'); return; }
   if (!name){ setMsg('pMsg','✘ Product name required','err'); return; }
@@ -297,6 +540,7 @@ function loadStock() {
         +'<td><button class="del-btn" onclick="deleteProduct(\''+p.code+'\')">Delete</button></td>'
         +'</tr>';
     }).join('');
+    updateStockAddVisibility();
   }).catch(function(e){ tb.innerHTML='<tr><td colspan="6" class="empty-td">✘ '+escHtml(e.message)+'</td></tr>'; });
 }
 
@@ -372,7 +616,7 @@ function loadIncentives() {
 }
 
 /* =========================================================
-   SUPERVISOR (incentives card)
+   SUPERVISOR
 ========================================================= */
 function checkSupStatus() {
   api('GET','/api/supervisor/status').then(function(r){
@@ -417,9 +661,7 @@ function supervisorEditIncentive() {
 }
 
 /* =========================================================
-   ATTENDANCE  — now lives inside Account page
-   Supervisor → sees own workers only
-   Manager    → sees ALL workers + supervisor column
+   ATTENDANCE
 ========================================================= */
 function loadAttendance() {
   var d = getVal('attDate') || todayISO();
@@ -455,7 +697,6 @@ function loadAttendance() {
     tb.innerHTML = '<tr><td colspan="5" class="empty-td">✘ '+escHtml(e.message)+'</td></tr>';
   });
 }
-
 function markAtt(num, status) {
   var d = getVal('attDate') || todayISO();
   api('POST','/api/attendance/mark',{worker_number:num,date:d,status:status})
@@ -464,19 +705,72 @@ function markAtt(num, status) {
 }
 
 /* =========================================================
-   REPORTS — Tabs: Sales | Daily (no login) | Monthly (login)
+   REPORTS
+   - Sales Report: Password protected
+   - Daily Sales:  Manager only + always today's date
+   - Monthly:      Login required
 ========================================================= */
 function showReportTab(tab) {
+  // Sales tab: check password first
+  if (tab === 'sales') {
+    if (!SALES_REPORT_UNLOCKED) {
+      showSalesPasswordModal();
+      return;
+    }
+  }
+  // Daily tab: Manager only
+  if (tab === 'daily') {
+    refreshAuth().then(function(){
+      if (!AUTH.is_manager) {
+        toast('Daily Sales Report is for Managers only','err');
+        return;
+      }
+      _activateReportTab('daily');
+      initDailyReport();
+    });
+    return;
+  }
+
+  _activateReportTab(tab);
+  if (tab === 'sales')   loadReports();
+  if (tab === 'monthly') initMonthlyReport();
+}
+
+function _activateReportTab(tab) {
   document.querySelectorAll('.rtab').forEach(function(t){ t.classList.remove('active'); });
   document.querySelectorAll('.report-subpage').forEach(function(p){ p.classList.remove('active'); });
   var btn = document.getElementById('rtab-'+tab);
   var pg  = document.getElementById('rpage-'+tab);
   if (btn) btn.classList.add('active');
   if (pg)  pg.classList.add('active');
+}
 
-  if (tab === 'sales')   loadReports();
-  if (tab === 'daily')   initDailyReport();
-  if (tab === 'monthly') initMonthlyReport();
+/* ── Sales Report Password Modal ── */
+function showSalesPasswordModal() {
+  var modal = document.getElementById('salesPassModal');
+  if (modal) {
+    modal.classList.remove('hidden');
+    setTimeout(function(){ var el=document.getElementById('salesPassInput'); if(el) el.focus(); }, 100);
+  }
+}
+function closeSalesPasswordModal() {
+  var modal = document.getElementById('salesPassModal');
+  if (modal) modal.classList.add('hidden');
+  setVal('salesPassInput','');
+  setMsg('salesPassMsg','','');
+}
+function checkSalesPassword() {
+  var entered = getVal('salesPassInput');
+  if (entered === SALES_REPORT_PASSWORD) {
+    SALES_REPORT_UNLOCKED = true;
+    closeSalesPasswordModal();
+    _activateReportTab('sales');
+    loadReports();
+    toast('Sales Report unlocked','ok');
+  } else {
+    setMsg('salesPassMsg','✘ Wrong password. Try again.','err');
+    setVal('salesPassInput','');
+  }
 }
 
 /* SALES */
@@ -523,32 +817,47 @@ function loadReports() {
   });
 }
 
-/* DAILY — no login needed, just load */
+/* DAILY — Manager only, always today */
 function initDailyReport() {
-  if (!getVal('dlyDate')) setVal('dlyDate', todayISO());
+  // Always set to today
+  setVal('dlyDate', todayISO());
+  // Disable date picker for non-managers (already blocked but extra safety)
+  var datePicker = document.getElementById('dlyDate');
+  if (datePicker) datePicker.readOnly = !AUTH.is_manager;
   loadDaily();
 }
 function loadDaily() {
   var d = getVal('dlyDate') || todayISO();
-  api('GET','/api/attendance/daily?date='+encodeURIComponent(d)).then(function(r){
-    document.getElementById('dlyP').textContent = r.summary.P;
-    document.getElementById('dlyA').textContent = r.summary.A;
-    document.getElementById('dlyH').textContent = r.summary.H;
-    document.getElementById('dlyL').textContent = r.summary.L;
-    var tb = document.getElementById('dlyTbody');
-    if (!r.rows.length){ tb.innerHTML='<tr><td colspan="3" class="empty-td">No data for this date</td></tr>'; return; }
-    tb.innerHTML = r.rows.map(function(row){
-      var label={P:'Present',A:'Absent',H:'Half-day',L:'Leave',U:'Not marked'}[row.status]||row.status;
-      return '<tr>'
-        +'<td><span class="code-pill">'+escHtml(row.number)+'</span></td>'
-        +'<td><strong>'+escHtml(row.name)+'</strong></td>'
-        +'<td><span class="status-pill '+row.status.toLowerCase()+'">'+label+'</span></td>'
-        +'</tr>';
-    }).join('');
+  api('GET','/api/reports/daily-sales?date='+encodeURIComponent(d)).then(function(r){
+    document.getElementById('dsSales').textContent = money(r.summary.total_sales);
+    document.getElementById('dsBills').textContent = r.summary.total_bills;
+    document.getElementById('dsCusts').textContent = r.summary.unique_customers;
+    var tb = document.getElementById('dsBillsTb');
+    if (!r.bills.length){ tb.innerHTML='<tr><td colspan="6" class="empty-td">No bills for this date</td></tr>'; }
+    else {
+      tb.innerHTML = r.bills.map(function(b){
+        return '<tr>'
+          +'<td><strong>#'+String(b.id).padStart(3,'0')+'</strong></td>'
+          +'<td>'+escHtml(b.customer_name)+'</td>'
+          +'<td>'+escHtml(b.customer_phone)+'</td>'
+          +'<td>'+escHtml(b.worker_number||'—')+'</td>'
+          +'<td>'+b.item_count+'</td>'
+          +'<td><strong>'+money(b.total_amount)+'</strong></td>'
+          +'</tr>';
+      }).join('');
+    }
+    var pt = document.getElementById('dsProdTb');
+    if (pt){
+      pt.innerHTML = (!r.top_products||!r.top_products.length)
+        ? '<tr><td colspan="3" class="empty-td">No products today</td></tr>'
+        : r.top_products.map(function(p){
+            return '<tr><td>'+escHtml(p.product_name)+'</td><td>'+p.units+'</td><td>'+money(p.revenue)+'</td></tr>';
+          }).join('');
+    }
   }).catch(function(e){ toast(e.message,'err'); });
 }
 
-/* MONTHLY — login required */
+/* MONTHLY */
 function initMonthlyReport() {
   var gate = document.getElementById('monLoginGate');
   var body = document.getElementById('monBody');
@@ -587,6 +896,37 @@ function loadMonthly() {
       }).join('');
     }).catch(function(e){ toast(e.message,'err'); });
 }
+function loadMonthlyFull() {
+  var y=getVal('monYear'), m=document.getElementById('monMonth').value;
+  if (!y||!m){ toast('Pick year and month','err'); return; }
+  api('GET','/api/reports/monthly-sales?year='+encodeURIComponent(y)+'&month='+encodeURIComponent(m))
+    .then(function(r){
+      var s=r.summary;
+      function sv(id,v){var el=document.getElementById(id);if(el)el.textContent=v;}
+      sv('monSales', money(s.total_sales));
+      sv('monBillsCt', s.total_bills);
+      sv('monCusts', s.unique_customers);
+      var dt=document.getElementById('monDailyTb');
+      if(dt) dt.innerHTML=(!r.daily_breakdown||!r.daily_breakdown.length)
+        ? '<tr><td colspan="3" class="empty-td">No data</td></tr>'
+        : r.daily_breakdown.map(function(d){
+            return '<tr><td>'+escHtml(d.sale_date)+'</td><td>'+d.bills+'</td><td>'+money(d.sales)+'</td></tr>';
+          }).join('');
+      var pt=document.getElementById('monProdTb');
+      if(pt) pt.innerHTML=(!r.top_products||!r.top_products.length)
+        ? '<tr><td colspan="3" class="empty-td">No data</td></tr>'
+        : r.top_products.map(function(p){
+            return '<tr><td>'+escHtml(p.product_name)+'</td><td>'+p.units+'</td><td>'+money(p.revenue)+'</td></tr>';
+          }).join('');
+      var wt=document.getElementById('monWorkerTb');
+      if(wt) wt.innerHTML=(!r.worker_sales||!r.worker_sales.length)
+        ? '<tr><td colspan="4" class="empty-td">No data</td></tr>'
+        : r.worker_sales.map(function(w){
+            return '<tr><td>'+escHtml(w.worker_number)+'</td><td>'+escHtml(w.worker_name||'—')+'</td><td>'+w.bills+'</td><td>'+money(w.sales)+'</td></tr>';
+          }).join('');
+      loadMonthly();
+    }).catch(function(e){ toast(e.message,'err'); });
+}
 function downloadExcel() {
   var y=getVal('monYear'), m=document.getElementById('monMonth').value;
   if (!y||!m){ toast('Pick year and month','err'); return; }
@@ -595,8 +935,6 @@ function downloadExcel() {
 
 /* =========================================================
    ACCOUNT PAGE
-   • Supervisor login → shows Attendance panel (own workers)
-   • Manager login   → shows Attendance (ALL) + Assign panel
 ========================================================= */
 function refreshAccountPage() {
   refreshAuth().then(function(){
@@ -608,18 +946,14 @@ function refreshAccountPage() {
     var supCol  = document.getElementById('attSupCol');
 
     if (AUTH.logged_in) {
-      /* ── signed-in banner ── */
       signed.classList.remove('hidden');
       forms.classList.add('hidden');
       document.getElementById('accRole').textContent = AUTH.is_manager ? 'Manager' : 'Supervisor';
       document.getElementById('accUser').textContent = AUTH.username;
-
-      /* ── attendance panel — visible for both roles ── */
       attPanel.classList.remove('hidden');
       if (!getVal('attDate')) setVal('attDate', todayISO());
 
       if (AUTH.is_manager) {
-        /* Manager: show supervisor column, all workers */
         if (supCol) supCol.classList.remove('hidden');
         if (badge){
           badge.textContent = '🛡 Manager — seeing all workers';
@@ -628,7 +962,6 @@ function refreshAccountPage() {
         mgrPanel.classList.remove('hidden');
         loadSupervisors();
       } else {
-        /* Supervisor: hide supervisor column, own workers only */
         if (supCol) supCol.classList.add('hidden');
         if (badge){
           badge.textContent = '👨‍💼 Supervisor — your assigned workers';
@@ -636,9 +969,7 @@ function refreshAccountPage() {
         }
         mgrPanel.classList.add('hidden');
       }
-
       loadAttendance();
-
     } else {
       signed.classList.add('hidden');
       forms.classList.remove('hidden');
@@ -677,7 +1008,6 @@ function anyLogout() {
     .catch(function(){ refreshAccountPage(); });
 }
 
-/* Manager: assign workers */
 function loadSupervisors() {
   Promise.all([
     api('GET','/api/manager/supervisors'),
@@ -726,7 +1056,6 @@ function unassignWorker(wnum) {
    INIT
 ========================================================= */
 document.addEventListener('DOMContentLoaded', function() {
-  /* Check backend health */
   api('GET','/api/db-status').then(function(r){
     if (!r.ok){
       var bn=document.getElementById('dbBanner');
